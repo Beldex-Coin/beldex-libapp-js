@@ -4,3 +4,4 @@
 [submodule "src/submodules/beldex-libapp-cpp"]
 	path = src/submodules/beldex-libapp-cpp
 	url = https://github.com/Beldex-Coin/beldex-libapp-cpp.git
+	branch = feature-privacy-token

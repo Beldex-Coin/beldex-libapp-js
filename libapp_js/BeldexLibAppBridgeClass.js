@@ -81,6 +81,31 @@ class BeldexLibAppBridgeClass extends MyMoneroCoreBridgeEssentialsClass
 			self._cb_handlers__SendFundsFormSubmission["fromCpp__SendFundsFormSubmission__authenticate"]();
 		}
 	}
+	// HF22: what a private-token registration costs and requires, as protocol
+	// constants. Call this before offering registration in a UI: it is how the
+	// app learns that 10,000 BDX will be locked, for how long, and what the
+	// descriptor limits are, instead of discovering all of it from a failed
+	// send. Amounts come back as strings in atomic units -- 10,000 BDX exceeds
+	// what a JS number holds safely, so parse with BigInt if you do arithmetic.
+	//
+	// Returns:
+	//   { collateral_amount, collateral_lock_blocks, min_token_outputs,
+	//     min_fork_version, max_ticker_length, max_full_name_length,
+	//     max_decimal_point }
+	tokenRegistrationInfo()
+	{
+		return JSON.parse(this.Module.token_registration_info());
+	}
+	// Convenience for the common UI question: can this wallet afford to register
+	// a token right now? `unlockedBalance` is atomic units, as a string or
+	// BigInt. Deliberately excludes the network fee, which is not known until
+	// the inputs are chosen -- so treat a true here as necessary, not
+	// sufficient, and let the send report the exact shortfall.
+	canAffordTokenRegistration(unlockedBalance)
+	{
+		const info = this.tokenRegistrationInfo();
+		return BigInt(unlockedBalance) >= BigInt(info.collateral_amount);
+	}
 	__new_cb_args_with_no_task_id(err_msg, res)
 	{
 		const args = {};
@@ -204,7 +229,9 @@ class BeldexLibAppBridgeClass extends MyMoneroCoreBridgeEssentialsClass
 			self._cb_handlers__SendFundsFormSubmission = null // reset so we can enter process again
 		};
 		const args = 
-		{
+		{	
+			registration_string: fn_args.registration_string,
+			isRegisterStr: fn_args.isRegister,
 			fromWallet_didFailToInitialize: fn_args.fromWallet_didFailToInitialize,
 			fromWallet_didFailToBoot: fn_args.fromWallet_didFailToBoot,
 			fromWallet_needsImport: fn_args.fromWallet_needsImport,
@@ -248,7 +275,44 @@ class BeldexLibAppBridgeClass extends MyMoneroCoreBridgeEssentialsClass
 		if (typeof fn_args.resolvedPaymentID !== 'undefined' && fn_args.resolvedPaymentID !== null && fn_args.resolvedPaymentID !== "") {
 			args.resolvedPaymentID = fn_args.resolvedPaymentID;
 		}
+		//
+		// ── HF21 private tokens ───────────────────────────────────────────
+		// Send a token instead of BDX. The amounts in destinations are then
+		// denominated in that token, while the fee is still paid in BDX out of
+		// the wallet's native outputs. token_decimal_point is required alongside
+		// token_id: send amounts are human-readable and a token's scale is its
+		// own, not BDX's 9, so the C++ side refuses rather than mis-parsing it.
+		if (typeof fn_args.token_id !== 'undefined' && fn_args.token_id !== null && fn_args.token_id !== "") {
+			args.token_id = fn_args.token_id;
+		}
+		if (typeof fn_args.token_decimal_point !== 'undefined' && fn_args.token_decimal_point !== null && fn_args.token_decimal_point !== "") {
+			args.token_decimal_point = "" + fn_args.token_decimal_point;
+		}
+		// Deploy a new asset. This one supplies no destinations: they are derived
+		// from the descriptor and all point back at the sending wallet, which is
+		// where the initial supply is minted. The token's id is derived from the
+		// descriptor rather than chosen, and comes back on success_fn as
+		// params.token_id -- there is no other way to learn it.
+		if (typeof fn_args.is_deploy_token !== 'undefined' && fn_args.is_deploy_token) {
+			const descriptor = fn_args.token_descriptor;
+			if (typeof descriptor === 'undefined' || descriptor === null) {
+				throw "Expected fn_args.token_descriptor when is_deploy_token is set"
+			}
+			args.is_deploy_token = true;
+			// Everything crosses this bridge as a string, as with priority above.
+			// Supplies are human-readable on the token's own scale, like
+			// send_amount is: "1000" of an 8-decimal token, not 100000000000.
+			args.token_descriptor = {
+				ticker: "" + descriptor.ticker,
+				full_name: "" + (descriptor.full_name || ""),
+				meta_info: "" + (descriptor.meta_info || ""),
+				decimal_point: "" + descriptor.decimal_point,
+				total_max_supply: "" + descriptor.total_max_supply,
+				current_supply: "" + (descriptor.current_supply || "0")
+			};
+		}
 		const args_str = JSON.stringify(args, null, '')
+		// console.log('semd-funds args_str', args_str);
 		const ret_string = this.Module.send_funds(args_str);
 		const ret = JSON.parse(ret_string);
 		if (typeof ret.err_msg !== 'undefined' && ret.err_msg) { // this is actually an exception
